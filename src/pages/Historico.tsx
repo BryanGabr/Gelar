@@ -1,37 +1,19 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
   History, Search, Thermometer, ZapOff, CheckCircle2,
-  AlertTriangle, Clock3, CalendarDays, DoorOpen,
+  AlertTriangle, Clock3, CalendarDays, DoorOpen, LineChart as LineChartIcon,
 } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, CartesianGrid,
   XAxis, YAxis, Tooltip, ReferenceLine,
 } from 'recharts';
 
-type Occurrence = {
-  id: number;
-  equipment: string;
-  type: 'temperature' | 'power' | 'door';
-  description: string;
-  temperature: number;
-  date: string;
-  start: string;
-  end: string | null;
-  duration: string;
-  status: 'resolved' | 'active';
-};
+import { loadOccurrences, seedOccurrences, type OccurrenceRecord } from '../data/ocorrencias';
+
+type Occurrence = OccurrenceRecord;
 
 type Period = '24h' | '7d' | '30d';
 type StatusFilter = 'all' | 'active' | 'resolved';
-
-const occurrences: Occurrence[] = [
-  { id: 1, equipment: 'Freezer 3', type: 'temperature', description: 'Temperatura acima do limite permitido', temperature: -0.8, date: '06/11/2026', start: '09:20', end: null, duration: '6h 41min', status: 'active' },
-  { id: 2, equipment: 'Freezer 6', type: 'power', description: 'Possível interrupção de energia', temperature: -0.5, date: '06/11/2026', start: '14:35', end: null, duration: '1h 26min', status: 'active' },
-  { id: 3, equipment: 'Freezer 2', type: 'temperature', description: 'Temperatura normalizada automaticamente', temperature: -5.2, date: '06/11/2026', start: '08:10', end: '08:42', duration: '32min', status: 'resolved' },
-  { id: 4, equipment: 'Freezer 5', type: 'power', description: 'Alimentação elétrica restabelecida', temperature: -5.6, date: '05/11/2026', start: '18:42', end: '19:00', duration: '18min', status: 'resolved' },
-  { id: 5, equipment: 'Freezer 1', type: 'temperature', description: 'Oscilação de temperatura detectada', temperature: -3.1, date: '04/11/2026', start: '11:15', end: '11:39', duration: '24min', status: 'resolved' },
-  { id: 6, equipment: 'Freezer 4', type: 'power', description: 'Interrupção de energia detectada', temperature: -2.4, date: '03/11/2026', start: '16:20', end: '16:32', duration: '12min', status: 'resolved' },
-];
 
 const formatTemperature = (value: number) => `${value.toFixed(1).replace('.', ',')} °C`;
 
@@ -60,12 +42,115 @@ function makeTemperatureHistory(freezer: number, period: Period) {
   });
 }
 
+const toMinutes = (clock: string) => {
+  const [h, m] = clock.split(':').map(Number);
+  return h * 60 + m;
+};
+const toClock = (minutes: number) => {
+  const total = ((Math.round(minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+const durationMinutes = (text: string) => {
+  const clock = /^(\d+):(\d+)$/.exec(text.trim());
+  if (clock) return Number(clock[1]) + Number(clock[2]) / 60;
+  const hours = /(\d+)\s*h/.exec(text);
+  const mins = /(\d+)\s*min/.exec(text);
+  return (hours ? Number(hours[1]) * 60 : 0) + (mins ? Number(mins[1]) : 0);
+};
+
+// Limite máximo do freezer: lê o que foi salvo em Configurações; se não houver, usa -4 °C.
+function limitForEquipment(equipment: string): number {
+  try {
+    const saved = localStorage.getItem('gelar-configuracoes');
+    const number = equipment.replace(/\D/g, '');
+    if (saved) {
+      const parsed = JSON.parse(saved) as { freezerLimits?: Record<string, { max: number }> };
+      const value = parsed.freezerLimits?.[number]?.max;
+      if (typeof value === 'number') return value;
+    }
+  } catch {
+    // ignora
+  }
+  return -4;
+}
+
+// Curva ilustrativa da ocorrência: 30 min antes até a normalização. No piloto, vem do histórico do sensor.
+function makeIncidentCurve(item: Occurrence) {
+  const start = toMinutes(item.start);
+  const length = Math.max(durationMinutes(item.duration), 10);
+  const visible = Math.min(length, 120);
+  const peak = item.temperature;
+  const baseline = Math.min(-10, peak - 4);
+  const step = 5;
+  const points: { minute: number; label: string; temperature: number }[] = [];
+  for (let t = -30; t <= visible + 20; t += step) {
+    let temperature = baseline + Math.sin(t / 7) * 0.3;
+    if (t >= 0 && t <= visible) {
+      const ratio = Math.min(1, t / Math.max(Math.min(visible, 45), 10));
+      temperature = baseline + (peak - baseline) * ratio;
+    } else if (t > visible) {
+      const recovery = item.status === 'resolved' ? Math.min(1, (t - visible) / 20) : 0;
+      temperature = peak + (baseline - peak) * recovery;
+    }
+    points.push({ minute: start + t, label: toClock(start + t), temperature: Math.round(temperature * 10) / 10 });
+  }
+  return points;
+}
+
+function IncidentChart({ item }: { item: Occurrence }) {
+  const data = useMemo(() => makeIncidentCurve(item), [item]);
+  const limit = limitForEquipment(item.equipment);
+  const marks: { clock: string; text: string; color: string }[] = [{ clock: item.start, text: 'Alerta', color: '#fb7185' }];
+  if (item.assignedAt) marks.push({ clock: item.assignedAt.slice(0, 5), text: `Assumido${item.assignedTo ? ` (${item.assignedTo})` : ''}`, color: '#fbbf24' });
+  if (item.escalatedAt) marks.push({ clock: item.escalatedAt.slice(0, 5), text: 'Dono avisado', color: '#fb923c' });
+  if (item.end) marks.push({ clock: item.end, text: 'Normalizado', color: '#34d399' });
+  const labels = new Set(data.map((point) => point.label));
+  const snap = (clock: string) => {
+    if (labels.has(clock)) return clock;
+    const target = toMinutes(clock);
+    return data.reduce((best, point) => (Math.abs(point.minute - target) < Math.abs(toMinutes(best) - target) ? point.label : best), data[0].label);
+  };
+  return (
+    <div className="mt-4 rounded-lg border border-[#252b40] bg-[#0d1421] p-3">
+      <p className="mb-2 text-xs text-slate-400">
+        Temperatura × tempo, de 30 min antes do alerta até a normalização. Curva ilustrativa; no piloto vem do histórico do sensor.
+      </p>
+      <div className="h-56 w-full" role="img" aria-label={`Gráfico de temperatura por tempo da ocorrência do ${item.equipment}`}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 18, right: 12, left: -18, bottom: 4 }}>
+            <CartesianGrid stroke="#293244" strokeDasharray="3 3" />
+            <XAxis dataKey="label" stroke="#94a3b8" tick={{ fontSize: 11 }} minTickGap={22} />
+            <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} tickFormatter={(value: number) => `${value}°`} domain={['auto', 'auto']} />
+            <Tooltip
+              contentStyle={{ backgroundColor: '#151d2b', border: '1px solid #334155', borderRadius: 10, color: '#fff' }}
+              formatter={(value) => [formatTemperature(Number(value)), 'Temperatura']}
+            />
+            <ReferenceLine y={limit} stroke="#fb7185" strokeDasharray="5 5" label={{ value: `Limite: ${limit} °C`, fill: '#fb7185', fontSize: 10, position: 'insideBottomRight' }} />
+            {marks.map((mark) => (
+              <ReferenceLine key={mark.text} x={snap(mark.clock)} stroke={mark.color} strokeWidth={2}
+                label={{ value: mark.text, fill: mark.color, fontSize: 10, position: 'top' }} />
+            ))}
+            <Line type="monotone" dataKey="temperature" stroke="#22d3ee" strokeWidth={3} dot={false} activeDot={{ r: 5 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 export default function Historico() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [selectedFreezer, setSelectedFreezer] = useState(1);
   const [period, setPeriod] = useState<Period>('24h');
   const [onlySelected, setOnlySelected] = useState(false);
+  const [openId, setOpenId] = useState<number | null>(null);
+
+  // Ocorrências registradas no Monitor (assumir / resolvido / dono avisado) vêm primeiro; as demais são simuladas.
+  const occurrences = useMemo<Occurrence[]>(() => [...loadOccurrences(), ...seedOccurrences], []);
+  const durations = occurrences.map((item) => durationMinutes(item.duration)).filter((value) => value > 0);
+  const averageDuration = durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null;
+  const escalations = occurrences.filter((item) => item.escalatedAt).length;
 
   const history = useMemo(() => makeTemperatureHistory(selectedFreezer, period), [selectedFreezer, period]);
   const values = history.map((point) => point.temperature);
@@ -97,6 +182,8 @@ export default function Historico() {
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <SummaryCard title="Total de ocorrências" value={occurrences.length} icon={<History size={22} />} color="cyan" />
+          <SummaryCard title="Duração média" value={averageDuration === null ? '—' : `${averageDuration} min`} icon={<Clock3 size={22} />} color="cyan" />
+          <SummaryCard title="Escalonadas ao dono" value={escalations} icon={<AlertTriangle size={22} />} color="red" />
           <SummaryCard title="Resolvidas" value={resolved} icon={<CheckCircle2 size={22} />} color="green" />
           <SummaryCard title="Em andamento" value={active} icon={<AlertTriangle size={22} />} color="red" />
         </div>
@@ -154,9 +241,16 @@ export default function Historico() {
                         <span className="flex items-center gap-1"><Clock3 size={14} />{item.start} — {item.end ?? 'Em andamento'}</span>
                         <span className="flex items-center gap-1"><Thermometer size={14} />{formatTemperature(item.temperature)}</span>
                         <span>Duração: {item.duration}</span>
+                        {item.resolvedBy && <span className="text-emerald-300">Encerrado: {item.resolvedBy}</span>}
+                        {item.escalatedAt && <span className="text-orange-300">Dono avisado às {item.escalatedAt}</span>}
                       </div>
+                      <button type="button" onClick={() => setOpenId(openId === item.id ? null : item.id)}
+                        className="mt-3 flex items-center gap-2 rounded-lg bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20">
+                        <LineChartIcon size={14} /> {openId === item.id ? 'Ocultar curva' : 'Ver curva de temperatura'}
+                      </button>
                     </div>
                   </div>
+                  {openId === item.id && <IncidentChart item={item} />}
                 </article>
               );
             })}
@@ -237,7 +331,7 @@ function TemperatureCard({ title, value }: { title: string; value: number }) {
 }
 
 function SummaryCard({ title, value, icon, color }: {
-  title: string; value: number; icon: ReactNode; color: 'cyan' | 'green' | 'red';
+  title: string; value: number | string; icon: ReactNode; color: 'cyan' | 'green' | 'red';
 }) {
   const colors = {
     cyan: 'bg-cyan-500/10 text-cyan-400',

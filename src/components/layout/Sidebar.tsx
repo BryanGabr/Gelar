@@ -5,6 +5,7 @@ import {
   Refrigerator,
   Bell,
   History,
+  FileText,
   Settings,
   Snowflake,
   Monitor,
@@ -21,6 +22,7 @@ const menuItems = [
   { label: 'Equipamentos', icon: Refrigerator, path: '/equipamentos' },
   { label: 'Alertas', icon: Bell, path: '/alertas' },
   { label: 'Histórico', icon: History, path: '/historico' },
+  { label: 'Relatórios', icon: FileText, path: '/relatorios' },
   { label: 'Configurações', icon: Settings, path: '/configuracoes' },
 ];
 
@@ -30,7 +32,7 @@ export function Sidebar() {
 
   return (
     <aside
-      className={`flex w-full shrink-0 flex-col border-b border-slate-800
+      className={`print:hidden flex w-full shrink-0 flex-col border-b border-slate-800
         bg-[#0d1421] text-white transition-all duration-300
         md:min-h-screen md:border-b-0 md:border-r
         ${collapsed ? 'md:w-20' : 'md:w-60 xl:w-64'}

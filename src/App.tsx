@@ -6,6 +6,7 @@ import Equipamentos from './pages/Equipamentos';
 import Alertas from './pages/Alertas';
 import Historico from './pages/Historico';
 import Configuracoes from './pages/Configuracoes';
+import Relatorios from './pages/Relatorios';
 import Monitor from './pages/Monitor';
 
 function AppLayout() {
@@ -30,6 +31,7 @@ function App() {
           <Route path="/equipamentos" element={<Equipamentos />} />
           <Route path="/alertas" element={<Alertas />} />
           <Route path="/historico" element={<Historico />} />
+          <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/configuracoes" element={<Configuracoes />} />
         </Route>
       </Routes>

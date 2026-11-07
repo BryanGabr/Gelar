@@ -13,9 +13,17 @@ import {
   Snowflake,
   Radio,
   ZapOff,
+  PhoneCall,
 } from 'lucide-react';
 
 import { Link } from 'react-router';
+import {
+  escalationSeconds,
+  upsertOccurrence,
+  formatClock,
+  formatDate,
+  formatElapsed,
+} from '../data/ocorrencias';
 
 type Freezer = {
   id: number;
@@ -25,30 +33,46 @@ type Freezer = {
   status: 'normal' | 'alert';
   issue?: 'temperature' | 'power' | 'door';
   alertStartedAt?: number;
+  assignedTo?: string;
+  assignedAt?: number;
+  escalatedAt?: number;
+  occurrenceId?: number;
 };
+
+const ESCALATION_SECONDS = escalationSeconds();
+
+// Para a demo: /?recupera=30 faz o problema "se resolver sozinho" depois de 30 s, como se o sensor normalizasse.
+function autoRecoverSeconds(): number {
+  try {
+    const value = Number(new URLSearchParams(window.location.search).get('recupera'));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+const AUTO_RECOVER_SECONDS = autoRecoverSeconds();
+const AUTO_RESOLVED_BY = 'Automático (sensor normalizou)';
+
+// Instrução curta: diz o que fazer, não só o que aconteceu.
+function instructionFor(item: Freezer) {
+  if (item.issue === 'door') return 'Fechar a porta e conferir a vedação.';
+  if (item.issue === 'power') return 'Verificar disjuntor e tomada. Se não voltar, avisar o dono.';
+  return 'Conferir porta e vedação. Não abrir até normalizar.';
+}
+
+function describeIssue(item: Freezer) {
+  if (item.issue === 'door') return 'Porta aberta além do limite';
+  if (item.issue === 'power') return 'Sem energia no equipamento';
+  return 'Temperatura acima do limite';
+}
 
 const initialFreezers: Freezer[] = [
   { id: 1, name: 'Freezer 1', temperature: -5.5, limit: -4, status: 'normal' },
   { id: 2, name: 'Freezer 2', temperature: -5.2, limit: -4, status: 'normal' },
-  {
-    id: 3,
-    name: 'Freezer 3',
-    temperature: -0.8,
-    limit: -4,
-    status: 'alert',
-    issue: 'temperature',
-    alertStartedAt: Date.now() - 401 * 60000,
-  },
+  { id: 3, name: 'Freezer 3', temperature: -5.3, limit: -4, status: 'normal' },
   { id: 4, name: 'Freezer 4', temperature: -5.1, limit: -4, status: 'normal' },
   { id: 5, name: 'Freezer 5', temperature: -5.6, limit: -4, status: 'normal' },
-  {
-    id: 6,
-    name: 'Freezer 6',
-    temperature: -0.5,
-    limit: -4,
-    status: 'alert',
-    issue: 'power',
-  },
+  { id: 6, name: 'Freezer 6', temperature: -5.1, limit: -4, status: 'normal' },
   { id: 7, name: 'Freezer 7', temperature: -5.4, limit: -4, status: 'normal' },
   { id: 8, name: 'Freezer 8', temperature: -5.0, limit: -4, status: 'normal' },
 ];
@@ -73,6 +97,8 @@ export default function Monitor() {
   const [freezers, setFreezers] = useState(initialFreezers);
   const [muted, setMuted] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [lastResolved, setLastResolved] = useState<string | null>(null);
+  const nextOccurrenceId = useRef(Date.now());
   const audioRef = useRef<AudioContext | null>(null);
   const [radioEnabled, setRadioEnabled] = useState(false);
   const [radioTransmitting, setRadioTransmitting] = useState(false);
@@ -119,17 +145,13 @@ export default function Monitor() {
     enableAudio();
     activateRadio();
     setFreezers((previous) => previous.map((item) =>
-      item.id === 2 ? { ...item, status: 'normal', issue: 'door', alertStartedAt: Date.now() } : item
-    ));
-  };
-
-  const closeDoor = () => {
-    setFreezers((previous) => previous.map((item) =>
-      item.id === 2 && item.issue === 'door'
-        ? { ...item, status: 'normal', issue: undefined, alertStartedAt: undefined }
+      item.id === 2
+        ? { ...item, status: 'normal', issue: 'door', alertStartedAt: Date.now(), assignedTo: undefined, assignedAt: undefined, escalatedAt: undefined, occurrenceId: ++nextOccurrenceId.current }
         : item
     ));
   };
+
+  const closeDoor = () => finish([2]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -162,6 +184,64 @@ export default function Monitor() {
         )
       : 0;
 
+  const alertSeconds = (item: Freezer) =>
+    item.alertStartedAt ? Math.max(0, Math.floor((now.getTime() - item.alertStartedAt) / 1000)) : 0;
+
+  // Grava ou atualiza a ocorrência no registro compartilhado com o Histórico.
+  const record = (item: Freezer, patch: { status?: 'active' | 'resolved'; resolvedBy?: string; endedAt?: number }) => {
+    if (!item.occurrenceId || !item.alertStartedAt || !item.issue) return;
+    const endedAt = patch.endedAt;
+    upsertOccurrence({
+      id: item.occurrenceId,
+      equipment: item.name,
+      type: item.issue,
+      description: describeIssue(item),
+      temperature: item.temperature,
+      date: formatDate(item.alertStartedAt),
+      start: formatClock(item.alertStartedAt),
+      end: endedAt ? formatClock(endedAt) : null,
+      duration: formatElapsed(((endedAt ?? now.getTime()) - item.alertStartedAt) / 1000),
+      status: patch.status ?? 'active',
+      assignedTo: item.assignedTo,
+      assignedAt: item.assignedAt ? formatClock(item.assignedAt) : undefined,
+      resolvedBy: patch.resolvedBy,
+      escalatedAt: item.escalatedAt ? formatClock(item.escalatedAt) : undefined,
+      responseSeconds: item.assignedAt ? Math.floor((item.assignedAt - item.alertStartedAt) / 1000) : undefined,
+    });
+  };
+
+  const isAlertItem = (item: Freezer) =>
+    item.status === 'alert' ||
+    (item.issue === 'door' && item.alertStartedAt !== undefined && now.getTime() - item.alertStartedAt > 60000);
+
+  // O alerta sai sozinho quando o sensor volta ao normal: registra a ocorrência como resolvida
+  // e limpa o freezer. Porta fechada antes de 1 minuto nem chega a virar ocorrência.
+  const finish = (ids: number[]) => {
+    const at = Date.now();
+    const closed = freezers.filter((item) => ids.includes(item.id) && item.issue);
+    const alertedNames = closed.filter(isAlertItem).map((item) => item.name);
+    setFreezers((previous) =>
+      previous.map((item) => {
+        if (!ids.includes(item.id) || !item.issue) return item;
+        if (isAlertItem(item)) record(item, { status: 'resolved', resolvedBy: AUTO_RESOLVED_BY, endedAt: at });
+        return {
+          ...item,
+          temperature: -5.2,
+          status: 'normal',
+          issue: undefined,
+          alertStartedAt: undefined,
+          assignedTo: undefined,
+          assignedAt: undefined,
+          escalatedAt: undefined,
+          occurrenceId: undefined,
+        };
+      }),
+    );
+    if (alertedNames.length > 0) {
+      setLastResolved(`${alertedNames.join(', ')} voltou ao normal às ${formatClock(at)}. Registrado no histórico.`);
+    }
+  };
+
   const date = new Intl.DateTimeFormat('pt-BR', {
     weekday: 'short',
     day: '2-digit',
@@ -184,33 +264,33 @@ export default function Monitor() {
   const simulate = (id: number, issue: 'temperature' | 'power') => {
     enableAudio();
     activateRadio();
+    setLastResolved(null);
+    const startedAt = Date.now();
+    const occurrenceId = ++nextOccurrenceId.current;
     setFreezers((previous) =>
-      previous.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              temperature: issue === 'temperature' ? -0.8 : -0.5,
-              status: 'alert',
-              issue,
-              alertStartedAt: Date.now(),
-            }
-          : item,
-      ),
+      previous.map((item) => {
+        if (item.id !== id) return item;
+        const updated: Freezer = {
+          ...item,
+          temperature: issue === 'temperature' ? -0.8 : -0.5,
+          status: 'alert',
+          issue,
+          alertStartedAt: startedAt,
+          assignedTo: undefined,
+          assignedAt: undefined,
+          escalatedAt: undefined,
+          occurrenceId,
+        };
+        record(updated, { status: 'active' });
+        return updated;
+      }),
     );
   };
 
   const normalize = () => {
     setMuted(false);
     stopRadioTransmission();
-    setFreezers((previous) =>
-      previous.map((item) => ({
-        ...item,
-        temperature: -5.2,
-        status: 'normal',
-        issue: undefined,
-        alertStartedAt: undefined,
-      })),
-    );
+    finish(freezers.map((item) => item.id));
   };
 
   const activateRadio = () => {
@@ -227,10 +307,10 @@ export default function Monitor() {
 
   const buildRadioMessage = (item: Freezer) => {
     if (item.issue === 'door')
-      return `Atenção! ${item.name} está com a porta aberta há mais de um minuto. Favor verificar.`;
+      return `${item.name}, porta aberta. ${instructionFor(item)}`;
     if (item.issue === 'power')
-      return `Atenção! ${item.name} está sem energia elétrica. Favor verificar.`;
-    return `Atenção! Temperatura crítica no ${item.name}. Favor verificar o equipamento.`;
+      return `${item.name} sem energia. ${instructionFor(item)}`;
+    return `${item.name}, temperatura subindo. ${instructionFor(item)}`;
   };
 
   const transmitRadio = (message: string) => {
@@ -274,6 +354,36 @@ export default function Monitor() {
     // activeAlertKeys representa alterações de alertas, não o relógio de cada segundo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAlertKeys, radioEnabled]);
+
+  // Escalonamento: alerta vermelho que não normaliza em ESCALATION_SECONDS avisa o dono.
+  // No piloto, isto vira uma ligação ou mensagem real (ex.: API de voz/WhatsApp); aqui é simulado.
+  useEffect(() => {
+    const due = alerts.filter(
+      (item) => !item.escalatedAt && alertSeconds(item) >= ESCALATION_SECONDS,
+    );
+    if (due.length === 0) return;
+    const at = Date.now();
+    setFreezers((previous) =>
+      previous.map((item) => {
+        if (!due.some((d) => d.id === item.id)) return item;
+        const updated = { ...item, escalatedAt: at };
+        record(updated, { status: 'active' });
+        return updated;
+      }),
+    );
+    transmitRadio(`${due[0].name} continua em alerta. Ligando para o dono.`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [now]);
+
+  // Demo: com ?recupera=SEGUNDOS, o problema se resolve sozinho, como se o sensor normalizasse.
+  useEffect(() => {
+    if (!AUTO_RECOVER_SECONDS) return;
+    const due = alerts.filter((item) => alertSeconds(item) >= AUTO_RECOVER_SECONDS).map((item) => item.id);
+    if (due.length > 0) finish(due);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [now]);
+
+  const escalated = alerts.filter((item) => item.escalatedAt);
 
   const fullscreen = () => {
     if (!document.fullscreenElement) {
@@ -362,6 +472,7 @@ export default function Monitor() {
               { label: 'Equipamentos', path: '/equipamentos' },
               { label: 'Alertas', path: '/alertas' },
               { label: 'Histórico', path: '/historico' },
+              { label: 'Relatórios', path: '/relatorios' },
               { label: 'Configurações', path: '/configuracoes' },
             ].map((item) => (
               <Link
@@ -414,20 +525,31 @@ export default function Monitor() {
                   ` (+${alerts.length - 1} alerta)`}
               </h2>
 
-              <p className="mt-1 text-xs lg:text-sm">
-                {mainAlert.issue === 'door'
-                  ? 'Feche a porta para encerrar o alarme.'
-                  : mainAlert.issue === 'power'
-                  ? 'Verifique a alimentação elétrica.'
-                  : 'Verifique a porta e a vedação do equipamento.'}
+              <p className="mt-1 text-sm font-semibold lg:text-base">{instructionFor(mainAlert)}</p>
+              <p className="mt-1 text-xs text-red-100">
+                {mainAlert.escalatedAt
+                  ? `Dono avisado às ${formatClock(mainAlert.escalatedAt)}`
+                  : `Equipe avisada no fone · se não normalizar, o dono é avisado em ${formatElapsed(Math.max(0, ESCALATION_SECONDS - alertSeconds(mainAlert)))}`}
               </p>
             </div>
+
           </div>
         ) : (
           <div className="mb-3 rounded-xl bg-emerald-900 p-3 text-base font-bold">
             {pendingDoors.length > 0
               ? 'Nenhum alerta crítico. Há porta aberta em observação.'
-              : 'Todos os equipamentos estão normais.'}
+              : lastResolved ?? 'Todos os equipamentos estão normais.'}
+          </div>
+        )}
+
+        {/* ESCALONAMENTO AO DONO */}
+        {escalated.length > 0 && (
+          <div className="mb-3 flex items-center gap-3 rounded-xl border border-orange-400 bg-orange-950 p-3 text-orange-100">
+            <PhoneCall size={24} className="animate-pulse text-orange-300" />
+            <p className="text-sm font-semibold">
+              Dono avisado por ligação às {formatClock(escalated[0].escalatedAt ?? now.getTime())}: {escalated[0].name} sem normalizar há {formatElapsed(alertSeconds(escalated[0]))}.
+              {escalated.length > 1 ? ` (+${escalated.length - 1})` : ''}
+            </p>
           </div>
         )}
 
@@ -535,6 +657,16 @@ export default function Monitor() {
                     </p>
                   )}
 
+                  {isAlert && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {freezer.escalatedAt && (
+                        <span className="flex items-center gap-1 rounded-full bg-orange-900 px-2 py-1 text-[11px] font-semibold text-orange-200">
+                          <PhoneCall size={12} /> Dono avisado
+                        </span>
+                      )}
+                    </div>
+                  )}
+
                 </div>
               </article>
             );
@@ -590,7 +722,7 @@ export default function Monitor() {
             onClick={normalize}
             className="rounded-md bg-emerald-800 px-3 py-1.5 text-xs hover:bg-emerald-700"
           >
-            Normalizar tudo
+            Sensores voltam ao normal
           </button>
 
           <span className="text-[10px] text-slate-500">
