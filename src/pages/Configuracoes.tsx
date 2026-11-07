@@ -14,21 +14,25 @@ import {
 type Config = {
   establishment: string;
   responsible: string;
-  temperatureLimit: number;
+  freezerLimits: Record<string, { min: number; max: number }>;
   notifications: boolean;
   temperatureAlerts: boolean;
   powerAlerts: boolean;
   soundAlerts: boolean;
+  voiceAlerts: boolean;
 };
 
 const defaultConfig: Config = {
   establishment: 'Pôr do Sol',
   responsible: 'Administrador',
-  temperatureLimit: -4,
+  freezerLimits: Object.fromEntries(
+    Array.from({ length: 8 }, (_, index) => [String(index + 1), { min: -10, max: -4 }])
+  ),
   notifications: true,
   temperatureAlerts: true,
   powerAlerts: true,
-  soundAlerts: false,
+  soundAlerts: true,
+  voiceAlerts: true,
 };
 
 const STORAGE_KEY = 'gelar-configuracoes';
@@ -36,23 +40,35 @@ const STORAGE_KEY = 'gelar-configuracoes';
 function loadConfig(): Config {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-
     if (saved) {
-      return {
-        ...defaultConfig,
-        ...JSON.parse(saved),
-      };
+      const parsed = JSON.parse(saved);
+      const previousMax = typeof parsed.temperatureLimit === 'number' &&
+        Number.isFinite(parsed.temperatureLimit) ? parsed.temperatureLimit : -4;
+      const limits: Config['freezerLimits'] = {};
+      for (let id = 1; id <= 8; id++) {
+        const entry = parsed.freezerLimits?.[String(id)];
+        const min = entry?.min;
+        const max = entry?.max;
+        limits[String(id)] =
+          typeof min === 'number' && typeof max === 'number' &&
+          Number.isFinite(min) && Number.isFinite(max) && min < max
+            ? { min, max }
+            : { min: Math.min(-10, previousMax - 1), max: previousMax };
+      }
+      return { ...defaultConfig, ...parsed, freezerLimits: limits };
     }
   } catch {
-    // Usa as configurações padrão.
+    // Usa os valores padrão se o armazenamento estiver indisponível.
   }
-
   return defaultConfig;
 }
 
 export default function Configuracoes() {
   const [config, setConfig] = useState<Config>(loadConfig);
   const [saved, setSaved] = useState(false);
+  const [selectedFreezer, setSelectedFreezer] = useState('1');
+  const [limitError, setLimitError] = useState('');
+  const currentLimits = config.freezerLimits[selectedFreezer];
 
   function updateConfig<K extends keyof Config>(
     key: K,
@@ -66,7 +82,33 @@ export default function Configuracoes() {
     setSaved(false);
   }
 
+  function updateFreezerLimit(key: 'min' | 'max', value: number) {
+    setConfig((previous) => ({
+      ...previous,
+      freezerLimits: {
+        ...previous.freezerLimits,
+        [selectedFreezer]: {
+          ...previous.freezerLimits[selectedFreezer],
+          [key]: value,
+        },
+      },
+    }));
+    setSaved(false);
+    setLimitError('');
+  }
+
   function saveConfig() {
+    const invalid = Object.entries(config.freezerLimits).find(([, limits]) =>
+      !Number.isFinite(limits.min) || !Number.isFinite(limits.max) ||
+      limits.min >= limits.max
+    );
+    if (invalid) {
+      setSelectedFreezer(invalid[0]);
+      setLimitError('A temperatura mínima deve ser menor que a máxima.');
+      setSaved(false);
+      return;
+    }
+    setLimitError('');
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
       setSaved(true);
@@ -76,7 +118,11 @@ export default function Configuracoes() {
   }
 
   function resetConfig() {
-    setConfig({ ...defaultConfig });
+    setConfig({ ...defaultConfig, freezerLimits: Object.fromEntries(
+      Array.from({ length: 8 }, (_, index) => [String(index + 1), { min: -10, max: -4 }])
+    ) });
+    setSelectedFreezer('1');
+    setLimitError('');
     setSaved(false);
 
     try {
@@ -158,53 +204,84 @@ export default function Configuracoes() {
           </div>
         </section>
 
-        {/* TEMPERATURA */}
+        {/* TEMPERATURA INDIVIDUAL POR FREEZER */}
         <section className="rounded-xl border border-[#252b40] bg-[#111827] p-5">
           <div className="mb-5 flex items-center gap-3">
             <div className="rounded-lg bg-cyan-500/10 p-2 text-cyan-400">
               <Thermometer size={22} />
             </div>
-
             <div>
-              <h2 className="font-bold">Monitoramento de temperatura</h2>
+              <h2 className="font-bold">Limites de temperatura por freezer</h2>
               <p className="text-xs text-slate-400">
-                Defina o limite de temperatura para alertas.
+                Selecione o equipamento e configure sua faixa permitida.
               </p>
             </div>
           </div>
 
-          <div className="max-w-sm">
-            <label
-              htmlFor="temperatureLimit"
-              className="mb-2 block text-sm text-slate-300"
-            >
-              Temperatura máxima permitida (°C)
-            </label>
-
-            <div className="flex items-center gap-3">
-              <input
-                id="temperatureLimit"
-                type="number"
-                min={-30}
-                max={20}
-                step={0.5}
-                value={config.temperatureLimit}
-                onChange={(event) =>
-                  updateConfig(
-                    'temperatureLimit',
-                    Number(event.target.value)
-                  )
-                }
-                className="w-32 rounded-lg border border-[#293244] bg-[#0d1421] px-3 py-3 text-sm text-white outline-none focus:border-cyan-500"
-              />
-
-              <span className="text-sm text-slate-400">°C</span>
+          <div className="space-y-5">
+            <div className="max-w-sm">
+              <label htmlFor="selectedFreezer" className="mb-2 block text-sm text-slate-300">
+                Selecionar freezer
+              </label>
+              <select
+                id="selectedFreezer"
+                value={selectedFreezer}
+                onChange={(event) => {
+                  setSelectedFreezer(event.target.value);
+                  setLimitError('');
+                }}
+                className="w-full rounded-lg border border-[#293244] bg-[#0d1421] px-3 py-3 text-sm text-white outline-none focus:border-cyan-500"
+              >
+                {Array.from({ length: 8 }, (_, index) => (
+                  <option key={index + 1} value={String(index + 1)}>
+                    Freezer {index + 1}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            <p className="mt-3 text-xs text-slate-500">
-              Valor demonstrativo. Exemplo: com limite de -4 °C,
-              temperaturas acima desse valor representam alerta.
-            </p>
+            <div className="grid max-w-xl gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="minTemperature" className="mb-2 block text-sm text-slate-300">
+                  Temperatura mínima (°C)
+                </label>
+                <input
+                  id="minTemperature"
+                  type="number"
+                  step="0.5"
+                  value={currentLimits.min}
+                  onChange={(event) => updateFreezerLimit('min', event.target.value === '' ? NaN : Number(event.target.value))}
+                  className="w-full rounded-lg border border-[#293244] bg-[#0d1421] px-3 py-3 text-sm text-white outline-none focus:border-cyan-500"
+                />
+              </div>
+              <div>
+                <label htmlFor="maxTemperature" className="mb-2 block text-sm text-slate-300">
+                  Temperatura máxima (°C)
+                </label>
+                <input
+                  id="maxTemperature"
+                  type="number"
+                  step="0.5"
+                  value={currentLimits.max}
+                  onChange={(event) => updateFreezerLimit('max', event.target.value === '' ? NaN : Number(event.target.value))}
+                  className="w-full rounded-lg border border-[#293244] bg-[#0d1421] px-3 py-3 text-sm text-white outline-none focus:border-cyan-500"
+                />
+              </div>
+            </div>
+
+            {limitError && <p role="alert" className="text-sm text-red-400">{limitError}</p>}
+
+            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm text-slate-300">
+              <p className="font-semibold text-cyan-300">Freezer {selectedFreezer}</p>
+              <p className="mt-1">
+                Faixa configurada: {Number.isFinite(currentLimits.min) ? `${currentLimits.min} °C` : '—'} até{' '}
+                {Number.isFinite(currentLimits.max) ? `${currentLimits.max} °C` : '—'}
+              </p>
+              <p className="mt-2 text-xs text-slate-400">
+                Valores fora dessa faixa deverão gerar alertas quando integrarmos ao Monitor.
+                As temperaturas exibidas são apenas exemplos de configuração.
+              </p>
+            </div>
           </div>
         </section>
 
@@ -255,12 +332,17 @@ export default function Configuracoes() {
 
             <ToggleRow
               title="Alertas sonoros"
-              description="Preferência para avisos sonoros no sistema."
+              description="Emitir bipes de emergência quando houver alertas críticos."
               checked={config.soundAlerts}
-              disabled={!config.notifications}
               onChange={(value) =>
                 updateConfig('soundAlerts', value)
               }
+            />
+            <ToggleRow
+              title="Alertas por voz"
+              description="Anunciar por voz o freezer e o problema detectado (simulação no navegador)."
+              checked={config.voiceAlerts}
+              onChange={(value) => updateConfig('voiceAlerts', value)}
             />
           </div>
         </section>
@@ -275,8 +357,9 @@ export default function Configuracoes() {
             </p>
             <p className="mt-1 text-xs leading-5 text-slate-400">
               As configurações são salvas somente neste navegador.
-              Por enquanto, não alteram os dados do Monitor, os sensores,
-              os limites reais nem enviam notificações.
+              As preferências de som e voz são salvas neste navegador, mas ainda
+              precisam ser conectadas ao Monitor para controlar a reprodução.
+              Não há comunicação com sensores ou rádios reais.
             </p>
           </div>
         </div>

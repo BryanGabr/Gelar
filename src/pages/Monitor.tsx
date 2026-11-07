@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  ArrowLeft,
+  Menu,
+  X,
   CalendarDays,
   Clock3,
   DoorOpen,
@@ -71,6 +72,7 @@ export default function Monitor() {
   const [now, setNow] = useState(() => new Date());
   const [freezers, setFreezers] = useState(initialFreezers);
   const [muted, setMuted] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const audioRef = useRef<AudioContext | null>(null);
   const [radioEnabled, setRadioEnabled] = useState(false);
   const [radioTransmitting, setRadioTransmitting] = useState(false);
@@ -288,14 +290,17 @@ export default function Monitor() {
         {/* CABEÇALHO */}
         <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <Link
-              to="/"
-              title="Voltar ao Dashboard"
-              aria-label="Voltar ao Dashboard"
+            <button
+              type="button"
+              onClick={() => setMenuOpen((previous) => !previous)}
+              title={menuOpen ? 'Fechar menu' : 'Abrir menu'}
+              aria-label={menuOpen ? 'Fechar menu' : 'Abrir menu'}
+              aria-expanded={menuOpen}
+              aria-controls="monitor-navigation"
               className="flex items-center justify-center rounded-lg border border-slate-700 bg-[#1b2230] p-2 text-slate-300 transition-colors hover:bg-slate-700 hover:text-white"
             >
-              <ArrowLeft size={20} />
-            </Link>
+              {menuOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
 
             <div className="rounded-xl bg-violet-600 p-2">
               <Snowflake size={24} />
@@ -345,6 +350,37 @@ export default function Monitor() {
           </div>
         </header>
 
+        {/* MENU DE NAVEGAÇÃO — O MONITOR É A PÁGINA INICIAL */}
+        {menuOpen && (
+          <nav
+            id="monitor-navigation"
+            aria-label="Navegação principal"
+            className="mb-3 flex flex-wrap gap-2 rounded-xl border border-slate-700 bg-[#111827] p-3"
+          >
+            {[
+              { label: 'Monitor', path: '/' },
+              { label: 'Equipamentos', path: '/equipamentos' },
+              { label: 'Alertas', path: '/alertas' },
+              { label: 'Histórico', path: '/historico' },
+              { label: 'Configurações', path: '/configuracoes' },
+            ].map((item) => (
+              <Link
+                key={item.path}
+                to={item.path}
+                onClick={() => setMenuOpen(false)}
+                aria-current={item.path === '/' ? 'page' : undefined}
+                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  item.path === '/'
+                    ? 'bg-cyan-500/10 text-cyan-400'
+                    : 'bg-[#1b2230] text-slate-200 hover:bg-slate-700'
+                }`}
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+        )}
+
         {/* PORTA ABERTA: AVISO ANTES DE 1 MINUTO */}
         {pendingDoors.length > 0 && (
           <div className="mb-3 flex items-center gap-3 rounded-xl border border-amber-500 bg-amber-950 p-3 text-amber-200">
@@ -389,7 +425,9 @@ export default function Monitor() {
           </div>
         ) : (
           <div className="mb-3 rounded-xl bg-emerald-900 p-3 text-base font-bold">
-            Todos os equipamentos estão normais.
+            {pendingDoors.length > 0
+              ? 'Nenhum alerta crítico. Há porta aberta em observação.'
+              : 'Todos os equipamentos estão normais.'}
           </div>
         )}
 

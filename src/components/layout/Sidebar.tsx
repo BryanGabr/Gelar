@@ -2,11 +2,9 @@
 import { useState } from 'react';
 
 import {
-  LayoutDashboard,
   Refrigerator,
   Bell,
   History,
-  BarChart3,
   Settings,
   Snowflake,
   Monitor,
@@ -19,12 +17,10 @@ import {
 import { NavLink } from 'react-router';
 
 const menuItems = [
-  { label: 'Dashboard', icon: LayoutDashboard, path: '/', end: true },
+  { label: 'Monitor', icon: Monitor, path: '/' },
   { label: 'Equipamentos', icon: Refrigerator, path: '/equipamentos' },
   { label: 'Alertas', icon: Bell, path: '/alertas' },
   { label: 'Histórico', icon: History, path: '/historico' },
-  { label: 'Relatórios', icon: BarChart3, path: '/relatorios' },
-  { label: 'Monitor', icon: Monitor, path: '/monitor' },
   { label: 'Configurações', icon: Settings, path: '/configuracoes' },
 ];
 
@@ -120,15 +116,16 @@ export function Sidebar() {
               <NavLink
                 key={item.path}
                 to={item.path}
-                end={item.end}
+                end
                 onClick={() => setMobileOpen(false)}
                 title={collapsed ? item.label : undefined}
                 className={({ isActive }) =>
                   `flex items-center rounded-lg py-3 text-sm
                    transition-colors
-                   ${collapsed
-                     ? 'md:justify-center md:px-2'
-                     : 'gap-3 px-3'
+                   ${
+                     collapsed
+                       ? 'md:justify-center md:px-2'
+                       : 'gap-3 px-3'
                    }
                    ${
                      isActive

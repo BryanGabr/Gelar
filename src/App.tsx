@@ -1,13 +1,10 @@
-
 import { BrowserRouter, Routes, Route, Outlet } from 'react-router';
 
 import { Sidebar } from './components/layout/Sidebar';
 
-import Dashboard from './pages/Dashboard';
 import Equipamentos from './pages/Equipamentos';
 import Alertas from './pages/Alertas';
 import Historico from './pages/Historico';
-import Relatorios from './pages/Relatorios';
 import Configuracoes from './pages/Configuracoes';
 import Monitor from './pages/Monitor';
 
@@ -27,18 +24,14 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Páginas administrativas */}
+        <Route path="/" element={<Monitor />} />
+
         <Route element={<AppLayout />}>
-          <Route path="/" element={<Dashboard />} />
           <Route path="/equipamentos" element={<Equipamentos />} />
           <Route path="/alertas" element={<Alertas />} />
           <Route path="/historico" element={<Historico />} />
-          <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/configuracoes" element={<Configuracoes />} />
         </Route>
-
-        {/* Monitor independente, sem Sidebar */}
-        <Route path="/monitor" element={<Monitor />} />
       </Routes>
     </BrowserRouter>
   );
